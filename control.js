@@ -1,505 +1,805 @@
-// control.js
-// Control module: handles mouse/keyboard, protocol encapsulation and DataChannel interaction
-// Dependencies: existing DOM elements on the page (video, logs and input areas)
-
 (function () {
-  const dataChannelStateSpan = document.getElementById('datachannel-state');
-  const dataChannelLog = document.getElementById('data-channel');
-  const dcInput = document.getElementById('dc-input');
-  const dcSendBtn = document.getElementById('dc-send');
-  const audioCaptureChk = document.getElementById('audio-capture');
-  const displayIdInput = document.getElementById('display-id');
+  const ControlType = {
+    mouse: 0,
+    keyboard: 1,
+    audio_capture: 2,
+    host_infomation: 3,
+    display_id: 4,
+  };
 
-  let dc = null;
+  const MouseFlag = {
+    move: 0,
+    left_down: 1,
+    left_up: 2,
+    right_down: 3,
+    right_up: 4,
+    middle_down: 5,
+    middle_up: 6,
+    wheel_vertical: 7,
+    wheel_horizontal: 8,
+  };
 
-  // Pointer/mouse state
-  let lastPointerPos = null;
-  let isPointerLocked = false;
-  let videoRect = null;
-  let normalizedPos = { x: 0.5, y: 0.5 };
-  let _pointerlock_toast_timeout = null;
+  const clamp01 = (value) => Math.max(0, Math.min(1, value));
+  const isTextInput = (el) => {
+    if (!el || !el.tagName) return false;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "textarea") return true;
+    if (tag !== "input") return false;
+    const type = (el.getAttribute("type") || "text").toLowerCase();
+    return !["checkbox", "radio", "button", "submit", "reset"].includes(type);
+  };
 
-  // Virtual mouse related variables
-  let virtualMouse = null;
-  let isDraggingVirtualMouse = false;
-  let virtualMouseOffset = { x: 0, y: 0 };
+  class ControlManager {
+    constructor() {
+      this.dataChannel = null;
+      this.elements = {
+        video: document.getElementById("video"),
+        dataLog: document.getElementById("data-channel"),
+        mediaContainer: document.getElementById("media"),
+        videoContainer: document.getElementById("video-container"),
+        fullscreenBtn: document.getElementById("fullscreen-btn"),
+        realFullscreenBtn: document.getElementById("real-fullscreen-btn"),
+        virtualMouse: document.getElementById("virtual-mouse"),
+        virtualLeftBtn: document.getElementById("virtual-left-btn"),
+        virtualRightBtn: document.getElementById("virtual-right-btn"),
+        virtualWheel: document.getElementById("virtual-wheel"),
+        virtualTouchpad: document.getElementById("virtual-touchpad"),
+        virtualDragHandle: document.getElementById("virtual-mouse-drag-handle"),
+      };
 
-  // Fullscreen related variables
-  let isFullscreen = false;
-  let isRealFullscreen = false;
-  let originalContainerStyle = {};
+      this.state = {
+        pointerLocked: false,
+        normalizedPos: { x: 0.5, y: 0.5 },
+        lastPointerPos: null,
+        lastWheelAt: 0,
+        isFullscreen: false,
+        isRealFullscreen: false,
+        touchpadStart: null,
+        draggingVirtualMouse: false,
+        dragOffset: { x: 0, y: 0 },
+        pointerLockToastTimer: null,
+        videoRect: null,
+      };
 
-  // Protocol enumerations
-  const ControlType = { mouse: 0, keyboard: 1, audio_capture: 2, host_infomation: 3, display_id: 4 };
-  const MouseFlag = { move: 0, left_down: 1, left_up: 2, right_down: 3, right_up: 4, middle_down: 5, middle_up: 6, wheel_vertical: 7, wheel_horizontal: 8 };
+      this.virtualWheelTimer = null;
 
-  function showPointerLockToast(text, duration = 2500) {
-    let el = document.getElementById('pointerlock-toast');
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'pointerlock-toast';
-      Object.assign(el.style, {
-        position: 'fixed', left: '50%', bottom: '24px', transform: 'translateX(-50%)',
-        background: 'rgba(0,0,0,0.75)', color: '#fff', padding: '8px 12px', borderRadius: '6px',
-        fontSize: '13px', zIndex: '9999', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.2s'
-      });
-      document.body.appendChild(el);
+      this.onPointerLockChange = this.onPointerLockChange.bind(this);
+      this.onPointerLockError = this.onPointerLockError.bind(this);
+      this.onPointerDown = this.onPointerDown.bind(this);
+      this.onPointerMove = this.onPointerMove.bind(this);
+      this.onPointerUp = this.onPointerUp.bind(this);
+      this.onPointerCancel = this.onPointerCancel.bind(this);
+      this.onWheel = this.onWheel.bind(this);
+
+      this.onTouchStartFallback = this.onTouchStartFallback.bind(this);
+      this.onTouchMoveFallback = this.onTouchMoveFallback.bind(this);
+      this.onTouchEndFallback = this.onTouchEndFallback.bind(this);
+
+      this.onVirtualWheelStart = this.onVirtualWheelStart.bind(this);
+      this.onVirtualWheelEnd = this.onVirtualWheelEnd.bind(this);
+      this.onTouchpadStart = this.onTouchpadStart.bind(this);
+      this.onTouchpadMove = this.onTouchpadMove.bind(this);
+      this.onTouchpadEnd = this.onTouchpadEnd.bind(this);
+
+      this.onDragHandleTouchStart = this.onDragHandleTouchStart.bind(this);
+      this.onDragHandleTouchMove = this.onDragHandleTouchMove.bind(this);
+      this.onDragHandleTouchEnd = this.onDragHandleTouchEnd.bind(this);
+      this.onDragHandleClick = this.onDragHandleClick.bind(this);
+
+      this.init();
     }
-    el.textContent = text;
-    el.style.opacity = '1';
-    if (_pointerlock_toast_timeout) clearTimeout(_pointerlock_toast_timeout);
-    _pointerlock_toast_timeout = setTimeout(() => { el.style.opacity = '0'; _pointerlock_toast_timeout = null; }, duration);
-  }
 
-  function clamp01(v) { return Math.max(0, Math.min(1, v)); }
-
-  function logSent(obj) {
-    if (dataChannelLog) {
-      dataChannelLog.textContent += '> ' + JSON.stringify(obj) + '\n';
-      dataChannelLog.scrollTop = dataChannelLog.scrollHeight;
-    }
-  }
-
-  // External: entry point for setting display ID (called by button)
-  function setDisplayId() {
-    if (!displayIdInput) return;
-    let id = '';
-    if (displayIdInput.tagName === 'SELECT') {
-      id = displayIdInput.value || '';
-    } else {
-      id = (displayIdInput.value && displayIdInput.value.trim()) ? displayIdInput.value.trim() : '';
-    }
-    if (!id) id = (window.CROSSDESK_TRACK_ID || '');
-    if (!id) { alert('暂无可用 track id'); return; }
-    // 同步标题显示
-    const trackIdEl = document.getElementById('track-id');
-    if (trackIdEl) trackIdEl.textContent = id;
-    sendDisplayId(id);
-  }
-
-  // Send: mouse/keyboard/audio/display
-  function sendRemoteActionAt(normX, normY, flag, s = 0) {
-    const numericFlag = (typeof flag === 'string') ? (MouseFlag[flag] ?? MouseFlag.move) : (flag | 0);
-    const remote_action = { type: ControlType.mouse, mouse: { x: clamp01(normX), y: clamp01(normY), s: (s | 0), flag: numericFlag } };
-    if (dc && dc.readyState === 'open') {
-      dc.send(JSON.stringify(remote_action));
-      logSent(remote_action);
-    }
-  }
-
-  function sendKeyboardAction(keyValue, isDown) {
-    const remote_action = { type: ControlType.keyboard, keyboard: { key_value: keyValue | 0, flag: isDown ? 0 : 1 } };
-    if (dc && dc.readyState === 'open') {
-      dc.send(JSON.stringify(remote_action));
-      logSent(remote_action);
-    }
-  }
-
-  function sendAudioCapture(enabled) {
-    const remote_action = { type: ControlType.audio_capture, audio_capture: !!enabled };
-    if (dc && dc.readyState === 'open') {
-      dc.send(JSON.stringify(remote_action));
-      logSent(remote_action);
-    }
-  }
-
-  function sendDisplayId(id) {
-    // 约定：显示器ID即 track id（字符串）
-    const remote_action = { type: ControlType.display_id, display_id: id };
-    if (dc && dc.readyState === 'open') {
-      dc.send(JSON.stringify(remote_action));
-      logSent(remote_action);
-    }
-  }
-
-  // Send free text (protocol JSON only)
-  function sendDataChannelMessage() {
-    const msg = (dcInput && dcInput.value) ? dcInput.value.trim() : '';
-    if (!msg) return;
-    if (!dc || dc.readyState !== 'open') { alert('数据通道未打开，无法发送消息。'); return; }
-    try {
-      const obj = JSON.parse(msg);
-      const isObject = obj && typeof obj === 'object' && !Array.isArray(obj);
-      const hasNumericType = isObject && typeof obj.type === 'number';
-      const hasValidPayload = (('mouse' in obj) || ('keyboard' in obj) || ('audio_capture' in obj) || ('display_id' in obj));
-      if (!hasNumericType || !hasValidPayload) { alert('仅支持发送 RemoteAction 协议 JSON。'); return; }
-      dc.send(JSON.stringify(obj));
-      logSent(obj);
-      if (dcInput) dcInput.value = '';
-    } catch (e) { alert('请输入合法的 JSON。'); }
-  }
-
-  // Mouse and keyboard listeners
-  function setupKeyboardListeners() {
-    const onKeyDown = (e) => { const keyValue = (typeof e.keyCode === 'number') ? e.keyCode : 0; sendKeyboardAction(keyValue, true); };
-    const onKeyUp = (e) => { const keyValue = (typeof e.keyCode === 'number') ? e.keyCode : 0; sendKeyboardAction(keyValue, false); };
-    document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('keyup', onKeyUp);
-  }
-
-  function sendMouseEvent(event) {
-    const video = document.getElementById('video');
-    if (!video) return;
-    if (!videoRect) videoRect = video.getBoundingClientRect();
-
-    if (event.type === 'mousedown') {
-      if (event.clientX >= videoRect.left && event.clientX <= videoRect.right && event.clientY >= videoRect.top && event.clientY <= videoRect.bottom) {
-        normalizedPos.x = (event.clientX - videoRect.left) / videoRect.width;
-        normalizedPos.y = (event.clientY - videoRect.top) / videoRect.height;
-        try { video.requestPointerLock && video.requestPointerLock(); } catch (e) { }
-        const flag = event.button === 0 ? 'left_down' : (event.button === 2 ? 'right_down' : 'middle_down');
-        sendRemoteActionAt(normalizedPos.x, normalizedPos.y, flag);
+    init() {
+      const { video } = this.elements;
+      if (!video) {
+        console.warn("CrossDeskControl: video element not found");
+        return;
       }
-      return;
+
+      video.style.pointerEvents = "auto";
+      video.tabIndex = 0;
+
+      this.bindPointerLockEvents();
+      this.bindPointerListeners();
+      this.bindKeyboardListeners();
+      this.setupVirtualMouse();
+      this.setupFullscreenButtons();
     }
 
-    if (event.type === 'mouseup') {
-      if (isPointerLocked) {
-        const flag = event.button === 0 ? 'left_up' : (event.button === 2 ? 'right_up' : 'middle_up');
-        sendRemoteActionAt(normalizedPos.x, normalizedPos.y, flag);
-      } else if (event.clientX >= videoRect.left && event.clientX <= videoRect.right && event.clientY >= videoRect.top && event.clientY <= videoRect.bottom) {
-        const x = (event.clientX - videoRect.left) / videoRect.width;
-        const y = (event.clientY - videoRect.top) / videoRect.height;
-        const flag = event.button === 0 ? 'left_up' : (event.button === 2 ? 'right_up' : 'middle_up');
-        sendRemoteActionAt(x, y, flag);
+    setDataChannel(channel) {
+      this.dataChannel = channel;
+    }
+
+    isChannelOpen() {
+      return this.dataChannel && this.dataChannel.readyState === "open";
+    }
+
+    send(action) {
+      if (!this.isChannelOpen()) return false;
+      try {
+        const payload = JSON.stringify(action);
+        this.dataChannel.send(payload);
+        this.logDataChannel(payload);
+        return true;
+      } catch (err) {
+        console.error("CrossDeskControl: failed to send action", err);
+        return false;
       }
-      return;
     }
 
-    if (event.type === 'mousemove') {
-      if (isPointerLocked) {
-        videoRect = video.getBoundingClientRect();
-        normalizedPos.x = clamp01(normalizedPos.x + (event.movementX / videoRect.width));
-        normalizedPos.y = clamp01(normalizedPos.y + (event.movementY / videoRect.height));
-        sendRemoteActionAt(normalizedPos.x, normalizedPos.y, 'move');
-      } else {
-        if (event.clientX >= videoRect.left && event.clientX <= videoRect.right && event.clientY >= videoRect.top && event.clientY <= videoRect.bottom) {
-          const x = (event.clientX - videoRect.left) / videoRect.width;
-          const y = (event.clientY - videoRect.top) / videoRect.height;
-          sendRemoteActionAt(x, y, 'move');
+    sendMouseAction({ x, y, flag, scroll = 0 }) {
+      const numericFlag =
+        typeof flag === "string" ? MouseFlag[flag] ?? MouseFlag.move : flag | 0;
+
+      const action = {
+        type: ControlType.mouse,
+        mouse: {
+          x: clamp01(x),
+          y: clamp01(y),
+          s: scroll | 0,
+          flag: numericFlag,
+        },
+      };
+
+      this.send(action);
+    }
+
+    sendKeyboardAction(keyValue, isDown) {
+      const action = {
+        type: ControlType.keyboard,
+        keyboard: {
+          key_value: keyValue | 0,
+          flag: isDown ? 0 : 1,
+        },
+      };
+      this.send(action);
+    }
+
+    sendAudioCapture(enabled) {
+      const action = {
+        type: ControlType.audio_capture,
+        audio_capture: !!enabled,
+      };
+      this.send(action);
+    }
+
+    sendDisplayId(id) {
+      const action = {
+        type: ControlType.display_id,
+        display_id: id | 0,
+      };
+      this.send(action);
+    }
+
+    sendRawMessage(raw) {
+      if (!this.isChannelOpen()) return false;
+      try {
+        this.dataChannel.send(raw);
+        this.logDataChannel(raw);
+        return true;
+      } catch (err) {
+        console.error("CrossDeskControl: failed to send raw message", err);
+        return false;
+      }
+    }
+
+    logDataChannel(text) {
+      const { dataLog } = this.elements;
+      if (!dataLog) return;
+      dataLog.textContent += `> ${text}\n`;
+      dataLog.scrollTop = dataLog.scrollHeight;
+    }
+
+    bindPointerLockEvents() {
+      document.addEventListener("pointerlockchange", this.onPointerLockChange);
+      document.addEventListener("pointerlockerror", this.onPointerLockError);
+      document.addEventListener("keydown", (event) => {
+        if (event.ctrlKey && event.key === "Escape") {
+          document.exitPointerLock?.();
         }
+      });
+    }
+
+    onPointerLockChange() {
+      this.state.pointerLocked = document.pointerLockElement === this.elements.video;
+      if (this.state.pointerLocked) {
+        this.state.videoRect = this.elements.video?.getBoundingClientRect() ?? null;
+      } else {
+        this.state.videoRect = null;
+        this.showPointerLockToast(
+          "已退出鼠标锁定，按 Esc 或点击视频重新锁定（释放可按 Ctrl+Esc）",
+          3000
+        );
       }
-      return;
-    }
-
-    if (event.type === 'wheel') {
-      let x, y;
-      if (isPointerLocked) { x = normalizedPos.x; y = normalizedPos.y; }
-      else {
-        videoRect = video.getBoundingClientRect();
-        if (!(event.clientX >= videoRect.left && event.clientX <= videoRect.right && event.clientY >= videoRect.top && event.clientY <= videoRect.bottom)) return;
-        x = (event.clientX - videoRect.left) / videoRect.width;
-        y = (event.clientY - videoRect.top) / videoRect.height;
+      if (this.elements.dataLog) {
+        this.elements.dataLog.textContent += `[pointerlock ${
+          this.state.pointerLocked ? "entered" : "exited"
+        }]\n`;
+        this.elements.dataLog.scrollTop = this.elements.dataLog.scrollHeight;
       }
-      const flag = event.deltaY === 0 ? 'wheel_horizontal' : 'wheel_vertical';
-      sendRemoteActionAt(x, y, flag, event.deltaY || event.deltaX);
-      return;
-    }
-  }
-
-  // Toggle fullscreen mode
-  function toggleFullscreen() {
-    const mediaContainer = document.getElementById('media');
-    const fullscreenBtn = document.getElementById('fullscreen-btn');
-
-    if (!mediaContainer || !fullscreenBtn) return;
-
-    if (!isFullscreen) {
-      // 进入最大化
-      mediaContainer.classList.add('fullscreen');
-      fullscreenBtn.textContent = '退出全屏';
-      isFullscreen = true;
-    } else {
-      // 退出最大化
-      mediaContainer.classList.remove('fullscreen');
-      fullscreenBtn.textContent = '最大化';
-      isFullscreen = false;
     }
 
-    // 更新视频区域矩形信息
-    const video = document.getElementById('video');
-    if (video) {
-      videoRect = video.getBoundingClientRect();
+    onPointerLockError() {
+      this.showPointerLockToast("鼠标锁定失败", 2500);
     }
-  }
 
-  // Toggle real fullscreen mode
-  function toggleRealFullscreen() {
-    const videoContainer = document.getElementById('video-container');
-    const realFullscreenBtn = document.getElementById('real-fullscreen-btn');
-
-    if (!videoContainer || !realFullscreenBtn) return;
-
-    if (!isRealFullscreen) {
-      // 进入全屏
-      if (videoContainer.requestFullscreen) {
-        videoContainer.requestFullscreen();
-      } else if (videoContainer.mozRequestFullScreen) { // Firefox
-        videoContainer.mozRequestFullScreen();
-      } else if (videoContainer.webkitRequestFullscreen) { // Chrome, Safari and Opera
-        videoContainer.webkitRequestFullscreen();
-      } else if (videoContainer.msRequestFullscreen) { // IE/Edge
-        videoContainer.msRequestFullscreen();
-      }
-
-      realFullscreenBtn.textContent = '退出全屏';
-      isRealFullscreen = true;
-    } else {
-      // 退出全屏
-      if (document.exitFullscreen) {
-        document.exitFullscreen();
-      } else if (document.mozCancelFullScreen) { // Firefox
-        document.mozCancelFullScreen();
-      } else if (document.webkitExitFullscreen) { // Chrome, Safari and Opera
-        document.webkitExitFullscreen();
-      } else if (document.msExitFullscreen) { // IE/Edge
-        document.msExitFullscreen();
-      }
-
-      realFullscreenBtn.textContent = '全屏';
-      isRealFullscreen = false;
-    }
-  }
-
-  // Make virtual mouse draggable
-  function setupDraggableVirtualMouse() {
-    virtualMouse = document.getElementById('virtual-mouse');
-    const videoContainer = document.getElementById('video-container');
-
-    if (!virtualMouse || !videoContainer) return;
-
-    // add touchstart event listener
-    virtualMouse.addEventListener('touchstart', (e) => {
-      // if the target is a button, ignore
-      if (e.target.classList.contains('virtual-mouse-btn')) return;
-
-      e.preventDefault();
-      isDraggingVirtualMouse = true;
-
-      const touch = e.touches[0];
-      const rect = virtualMouse.getBoundingClientRect();
-
-      // calculate offset between touch point and virtual mouse
-      virtualMouseOffset.x = touch.clientX - rect.left;
-      virtualMouseOffset.y = touch.clientY - rect.top;
-
-      e.stopPropagation();
-    }, { passive: false });
-
-    document.addEventListener('touchmove', (e) => {
-      if (!isDraggingVirtualMouse) return;
-
-      e.preventDefault();
-
-      const touch = e.touches[0];
-      const video = document.getElementById('video');
+    bindPointerListeners() {
+      const { video } = this.elements;
       if (!video) return;
 
-      const videoRect = video.getBoundingClientRect();
-      const containerRect = videoContainer.getBoundingClientRect();
+      try {
+        video.style.touchAction = "none";
+      } catch (err) {}
 
-      // calculate new mouse position
-      let newX = touch.clientX - virtualMouseOffset.x;
-      let newY = touch.clientY - virtualMouseOffset.y;
+      video.addEventListener("pointerdown", this.onPointerDown, {
+        passive: false,
+      });
+      document.addEventListener("pointermove", this.onPointerMove, {
+        passive: false,
+      });
+      document.addEventListener("pointerup", this.onPointerUp, {
+        passive: false,
+      });
+      document.addEventListener("pointercancel", this.onPointerCancel);
+      video.addEventListener("wheel", this.onWheel, { passive: false });
 
-      // limit mouse position to video container
-      const minX = containerRect.left;
-      const maxX = containerRect.right - virtualMouse.offsetWidth;
-      const minY = containerRect.top;
-      const maxY = containerRect.bottom - virtualMouse.offsetHeight;
-
-      newX = Math.max(minX, Math.min(newX, maxX));
-      newY = Math.max(minY, Math.min(newY, maxY));
-
-      // apply new mouse position
-      virtualMouse.style.left = (newX - containerRect.left) + 'px';
-      virtualMouse.style.top = (newY - containerRect.top) + 'px';
-      virtualMouse.style.right = 'auto';
-      virtualMouse.style.bottom = 'auto';
-      virtualMouse.style.transform = 'none';
-
-      e.stopPropagation();
-    }, { passive: false });
-
-    document.addEventListener('touchend', (e) => {
-      isDraggingVirtualMouse = false;
-      e.stopPropagation();
-    }, { passive: false });
-
-    document.addEventListener('touchcancel', (e) => {
-      isDraggingVirtualMouse = false;
-      e.stopPropagation();
-    }, { passive: false });
-  }
-
-  function setupMouseListeners() {
-    const video = document.getElementById('video');
-    if (!video) return;
-
-    try { video.style.touchAction = 'none'; } catch (e) { }
-
-    document.addEventListener('pointerlockchange', () => {
-      isPointerLocked = (document.pointerLockElement === video);
-      if (dataChannelLog) { dataChannelLog.textContent += `[pointerlock ${isPointerLocked ? 'entered' : 'exited'}]\n`; dataChannelLog.scrollTop = dataChannelLog.scrollHeight; }
-      if (isPointerLocked) { videoRect = video.getBoundingClientRect(); }
-      else { videoRect = null; showPointerLockToast('已退出鼠标锁定，按 Esc 或点击视频重新锁定（释放可按 Ctrl+Esc）', 3000); }
-    });
-    document.addEventListener('pointerlockerror', () => { showPointerLockToast('鼠标锁定失败', 2500); });
-    document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key === 'Escape') { if (document.exitPointerLock) document.exitPointerLock(); } });
-
-    // Pointer Events
-    video.addEventListener('pointerdown', (e) => {
-      if (e.button < 0) return; e.preventDefault();
-      lastPointerPos = { x: e.clientX, y: e.clientY };
-      try { video.setPointerCapture && video.setPointerCapture(e.pointerId); } catch (err) { }
-      sendMouseEvent({ type: 'mousedown', clientX: e.clientX, clientY: e.clientY, button: (typeof e.button === 'number') ? e.button : 0 });
-    }, { passive: false });
-
-    document.addEventListener('pointermove', (e) => {
-      const movementX = (lastPointerPos ? (e.clientX - lastPointerPos.x) : 0);
-      const movementY = (lastPointerPos ? (e.clientY - lastPointerPos.y) : 0);
-      lastPointerPos = { x: e.clientX, y: e.clientY };
-      sendMouseEvent({ type: 'mousemove', clientX: e.clientX, clientY: e.clientY, movementX, movementY });
-    }, { passive: false });
-
-    document.addEventListener('pointerup', (e) => {
-      try { video.releasePointerCapture && video.releasePointerCapture(e.pointerId); } catch (err) { }
-      sendMouseEvent({ type: 'mouseup', clientX: e.clientX, clientY: e.clientY, button: (typeof e.button === 'number') ? e.button : 0 });
-      lastPointerPos = null;
-    });
-    document.addEventListener('pointercancel', () => { lastPointerPos = null; });
-
-    if (!window.PointerEvent) {
-      video.addEventListener('touchstart', (e) => {
-        if (!e.touches || e.touches.length === 0) return;
-        const t = e.touches[0]; lastPointerPos = { x: t.clientX, y: t.clientY };
-        e.preventDefault(); sendMouseEvent({ type: 'mousedown', clientX: t.clientX, clientY: t.clientY, button: 0 });
-      }, { passive: false });
-      document.addEventListener('touchmove', (e) => {
-        if (!e.touches || e.touches.length === 0) return;
-        const t = e.touches[0]; const movementX = (lastPointerPos ? (t.clientX - lastPointerPos.x) : 0); const movementY = (lastPointerPos ? (t.clientY - lastPointerPos.y) : 0);
-        lastPointerPos = { x: t.clientX, y: t.clientY };
-        e.preventDefault(); sendMouseEvent({ type: 'mousemove', clientX: t.clientX, clientY: t.clientY, movementX, movementY });
-      }, { passive: false });
-      document.addEventListener('touchend', (e) => {
-        const t = (e.changedTouches && e.changedTouches[0]) || null;
-        if (t) { sendMouseEvent({ type: 'mouseup', clientX: t.clientX, clientY: t.clientY, button: 0 }); }
-        else { sendMouseEvent({ type: 'mouseup', clientX: 0, clientY: 0, button: 0 }); }
-        lastPointerPos = null;
-      }, { passive: false });
+      if (!window.PointerEvent) {
+        video.addEventListener("touchstart", this.onTouchStartFallback, {
+          passive: false,
+        });
+        document.addEventListener("touchmove", this.onTouchMoveFallback, {
+          passive: false,
+        });
+        document.addEventListener("touchend", this.onTouchEndFallback, {
+          passive: false,
+        });
+        document.addEventListener("touchcancel", this.onTouchEndFallback, {
+          passive: false,
+        });
+      }
     }
 
-    document.addEventListener('wheel', sendMouseEvent, { passive: true });
+    onPointerDown(event) {
+      const button = typeof event.button === "number" ? event.button : 0;
+      if (button < 0) return;
+      event.preventDefault?.();
 
-    // set up virtual mouse
-    setupVirtualMouse();
+      this.state.lastPointerPos = { x: event.clientX, y: event.clientY };
+      this.ensureVideoRect();
+      if (this.state.videoRect && this.isInsideVideo(event.clientX, event.clientY)) {
+        this.updateNormalizedFromClient(event.clientX, event.clientY);
+        this.requestPointerLock();
+      }
 
-    // set up draggable virtual mouse
-    setupDraggableVirtualMouse();
-
-    // set up fullscreen buttons
-    setupFullscreenButtons();
-  }
-
-  // Setup virtual mouse buttons
-  function setupVirtualMouse() {
-    const leftBtn = document.getElementById('virtual-left-btn');
-    const rightBtn = document.getElementById('virtual-right-btn');
-
-    if (leftBtn) {
-      leftBtn.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        // 发送鼠标左键按下事件
-        sendRemoteActionAt(normalizedPos.x, normalizedPos.y, 'left_down');
-      }, { passive: false });
-
-      leftBtn.addEventListener('touchend', (e) => {
-        e.preventDefault();
-        // 发送鼠标左键弹起事件
-        sendRemoteActionAt(normalizedPos.x, normalizedPos.y, 'left_up');
-      }, { passive: false });
+      this.elements.video?.setPointerCapture?.(event.pointerId ?? 0);
+      this.sendMouseAction({
+        x: this.state.normalizedPos.x,
+        y: this.state.normalizedPos.y,
+        flag: this.buttonToFlag(button, true),
+      });
     }
 
-    if (rightBtn) {
-      rightBtn.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        // send right click down
-        sendRemoteActionAt(normalizedPos.x, normalizedPos.y, 'right_down');
-      }, { passive: false });
+    onPointerMove(event) {
+      if (!this.state.pointerLocked && !this.state.lastPointerPos) return;
 
-      rightBtn.addEventListener('touchend', (e) => {
-        e.preventDefault();
-        // send right click up
-        sendRemoteActionAt(normalizedPos.x, normalizedPos.y, 'right_up');
-      }, { passive: false });
+      const movementX = this.state.pointerLocked
+        ? event.movementX
+        : event.clientX - (this.state.lastPointerPos?.x ?? event.clientX);
+      const movementY = this.state.pointerLocked
+        ? event.movementY
+        : event.clientY - (this.state.lastPointerPos?.y ?? event.clientY);
+
+      if (!this.state.pointerLocked) {
+        this.state.lastPointerPos = { x: event.clientX, y: event.clientY };
+      }
+
+      this.ensureVideoRect();
+      if (!this.state.videoRect) return;
+
+      if (this.state.pointerLocked) {
+        this.state.normalizedPos.x = clamp01(
+          this.state.normalizedPos.x + movementX / this.state.videoRect.width
+        );
+        this.state.normalizedPos.y = clamp01(
+          this.state.normalizedPos.y + movementY / this.state.videoRect.height
+        );
+        this.sendMouseAction({
+          x: this.state.normalizedPos.x,
+          y: this.state.normalizedPos.y,
+          flag: MouseFlag.move,
+        });
+        return;
+      }
+
+      if (!this.isInsideVideo(event.clientX, event.clientY)) return;
+      const x = (event.clientX - this.state.videoRect.left) /
+        this.state.videoRect.width;
+      const y = (event.clientY - this.state.videoRect.top) /
+        this.state.videoRect.height;
+      this.state.normalizedPos = { x: clamp01(x), y: clamp01(y) };
+      this.sendMouseAction({
+        x: this.state.normalizedPos.x,
+        y: this.state.normalizedPos.y,
+        flag: MouseFlag.move,
+      });
+    }
+
+    onPointerUp(event) {
+      const button = typeof event.button === "number" ? event.button : 0;
+      this.elements.video?.releasePointerCapture?.(event.pointerId ?? 0);
+      this.state.lastPointerPos = null;
+      this.sendMouseAction({
+        x: this.state.normalizedPos.x,
+        y: this.state.normalizedPos.y,
+        flag: this.buttonToFlag(button, false),
+      });
+    }
+
+    onPointerCancel() {
+      this.state.lastPointerPos = null;
+    }
+
+    onWheel(event) {
+      const now = Date.now();
+      if (now - this.state.lastWheelAt < 50) return;
+      this.state.lastWheelAt = now;
+
+      this.ensureVideoRect();
+      if (!this.state.videoRect) return;
+
+      let coords = this.state.normalizedPos;
+      if (!this.state.pointerLocked) {
+        if (!this.isInsideVideo(event.clientX, event.clientY)) return;
+        coords = {
+          x: (event.clientX - this.state.videoRect.left) /
+            this.state.videoRect.width,
+          y: (event.clientY - this.state.videoRect.top) /
+            this.state.videoRect.height,
+        };
+      }
+
+      this.sendMouseAction({
+        x: coords.x,
+        y: coords.y,
+        flag: event.deltaY === 0 ? MouseFlag.wheel_horizontal : MouseFlag.wheel_vertical,
+        scroll: event.deltaY || event.deltaX,
+      });
+      event.preventDefault();
+    }
+
+    onTouchStartFallback(event) {
+      if (!event.touches?.length) return;
+      const touch = event.touches[0];
+      this.state.lastPointerPos = { x: touch.clientX, y: touch.clientY };
+      event.preventDefault();
+      this.onPointerDown({
+        button: 0,
+        clientX: touch.clientX,
+        clientY: touch.clientY,
+      });
+    }
+
+    onTouchMoveFallback(event) {
+      if (!this.state.lastPointerPos || !event.touches?.length) return;
+      const touch = event.touches[0];
+      event.preventDefault();
+      this.onPointerMove({
+        clientX: touch.clientX,
+        clientY: touch.clientY,
+        movementX: touch.clientX - this.state.lastPointerPos.x,
+        movementY: touch.clientY - this.state.lastPointerPos.y,
+      });
+      this.state.lastPointerPos = { x: touch.clientX, y: touch.clientY };
+    }
+
+    onTouchEndFallback(event) {
+      const touch = event.changedTouches?.[0];
+      this.onPointerUp({
+        button: 0,
+        clientX: touch?.clientX ?? 0,
+        clientY: touch?.clientY ?? 0,
+      });
+      this.state.lastPointerPos = null;
+    }
+
+    buttonToFlag(button, isDown) {
+      const mapping = {
+        0: { down: MouseFlag.left_down, up: MouseFlag.left_up },
+        1: { down: MouseFlag.middle_down, up: MouseFlag.middle_up },
+        2: { down: MouseFlag.right_down, up: MouseFlag.right_up },
+      };
+      const record = mapping[button] || mapping[0];
+      return isDown ? record.down : record.up;
+    }
+
+    requestPointerLock() {
+      try {
+        this.elements.video?.requestPointerLock?.();
+      } catch (err) {
+        console.warn("CrossDeskControl: requestPointerLock failed", err);
+      }
+    }
+
+    ensureVideoRect() {
+      const { video } = this.elements;
+      if (!video) return;
+      this.state.videoRect = video.getBoundingClientRect();
+    }
+
+    isInsideVideo(clientX, clientY) {
+      const rect = this.state.videoRect;
+      if (!rect) return false;
+      return (
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom
+      );
+    }
+
+    updateNormalizedFromClient(clientX, clientY) {
+      if (!this.state.videoRect) return;
+      this.state.normalizedPos = {
+        x: clamp01((clientX - this.state.videoRect.left) / this.state.videoRect.width),
+        y: clamp01((clientY - this.state.videoRect.top) / this.state.videoRect.height),
+      };
+    }
+
+    bindKeyboardListeners() {
+      document.addEventListener("keydown", (event) => {
+        if (!this.isChannelOpen()) return;
+        if (event.repeat) return;
+        if (isTextInput(event.target)) return;
+        this.sendKeyboardAction(event.keyCode ?? 0, true);
+      });
+
+      document.addEventListener("keyup", (event) => {
+        if (!this.isChannelOpen()) return;
+        if (isTextInput(event.target)) return;
+        this.sendKeyboardAction(event.keyCode ?? 0, false);
+      });
+    }
+
+    setupVirtualMouse() {
+      const isDesktop = window.matchMedia(
+        "(hover: hover) and (pointer: fine)"
+      ).matches;
+
+      if (isDesktop) {
+        if (this.elements.virtualMouse) {
+          this.elements.virtualMouse.style.pointerEvents = "none";
+        }
+        return;
+      }
+
+      this.elements.virtualLeftBtn?.addEventListener(
+        "touchstart",
+        (event) => {
+          event.preventDefault();
+          this.sendMouseAction({
+            x: this.state.normalizedPos.x,
+            y: this.state.normalizedPos.y,
+            flag: MouseFlag.left_down,
+          });
+        },
+        { passive: false }
+      );
+
+      this.elements.virtualLeftBtn?.addEventListener(
+        "touchend",
+        (event) => {
+          event.preventDefault();
+          this.sendMouseAction({
+            x: this.state.normalizedPos.x,
+            y: this.state.normalizedPos.y,
+            flag: MouseFlag.left_up,
+          });
+        },
+        { passive: false }
+      );
+
+      this.elements.virtualRightBtn?.addEventListener(
+        "touchstart",
+        (event) => {
+          event.preventDefault();
+          this.sendMouseAction({
+            x: this.state.normalizedPos.x,
+            y: this.state.normalizedPos.y,
+            flag: MouseFlag.right_down,
+          });
+        },
+        { passive: false }
+      );
+
+      this.elements.virtualRightBtn?.addEventListener(
+        "touchend",
+        (event) => {
+          event.preventDefault();
+          this.sendMouseAction({
+            x: this.state.normalizedPos.x,
+            y: this.state.normalizedPos.y,
+            flag: MouseFlag.right_up,
+          });
+        },
+        { passive: false }
+      );
+
+      this.elements.virtualWheel?.addEventListener(
+        "touchstart",
+        this.onVirtualWheelStart,
+        { passive: false }
+      );
+      this.elements.virtualWheel?.addEventListener(
+        "touchend",
+        this.onVirtualWheelEnd,
+        { passive: false }
+      );
+      this.elements.virtualWheel?.addEventListener(
+        "touchcancel",
+        this.onVirtualWheelEnd,
+        { passive: false }
+      );
+
+      this.elements.virtualTouchpad?.addEventListener(
+        "touchstart",
+        this.onTouchpadStart,
+        { passive: false }
+      );
+      this.elements.virtualTouchpad?.addEventListener(
+        "touchmove",
+        this.onTouchpadMove,
+        { passive: false }
+      );
+      this.elements.virtualTouchpad?.addEventListener(
+        "touchend",
+        this.onTouchpadEnd,
+        { passive: false }
+      );
+      this.elements.virtualTouchpad?.addEventListener(
+        "touchcancel",
+        this.onTouchpadEnd,
+        { passive: false }
+      );
+
+      this.bindVirtualMouseDragging();
+    }
+
+    onVirtualWheelStart(event) {
+      event.preventDefault();
+      this.emitVirtualWheel();
+      this.virtualWheelTimer = setInterval(() => this.emitVirtualWheel(), 100);
+    }
+
+    onVirtualWheelEnd(event) {
+      event.preventDefault();
+      if (this.virtualWheelTimer) {
+        clearInterval(this.virtualWheelTimer);
+        this.virtualWheelTimer = null;
+      }
+    }
+
+    emitVirtualWheel() {
+      this.sendMouseAction({
+        x: this.state.normalizedPos.x,
+        y: this.state.normalizedPos.y,
+        flag: MouseFlag.wheel_vertical,
+        scroll: -20,
+      });
+    }
+
+    onTouchpadStart(event) {
+      const touch = event.touches?.[0];
+      if (!touch) return;
+      event.preventDefault();
+      this.state.touchpadStart = {
+        x: touch.clientX,
+        y: touch.clientY,
+        normalizedX: this.state.normalizedPos.x,
+        normalizedY: this.state.normalizedPos.y,
+      };
+    }
+
+    onTouchpadMove(event) {
+      const touch = event.touches?.[0];
+      if (!touch || !this.state.touchpadStart) return;
+      event.preventDefault();
+
+      this.ensureVideoRect();
+      if (!this.state.videoRect) return;
+
+      const sensitivity = 2;
+      const deltaX = touch.clientX - this.state.touchpadStart.x;
+      const deltaY = touch.clientY - this.state.touchpadStart.y;
+
+      const newX =
+        this.state.touchpadStart.normalizedX +
+        (deltaX / this.state.videoRect.width) * sensitivity;
+      const newY =
+        this.state.touchpadStart.normalizedY +
+        (deltaY / this.state.videoRect.height) * sensitivity;
+
+      this.state.normalizedPos = {
+        x: clamp01(newX),
+        y: clamp01(newY),
+      };
+
+      this.sendMouseAction({
+        x: this.state.normalizedPos.x,
+        y: this.state.normalizedPos.y,
+        flag: MouseFlag.move,
+      });
+    }
+
+    onTouchpadEnd(event) {
+      event.preventDefault();
+      this.state.touchpadStart = null;
+    }
+
+    bindVirtualMouseDragging() {
+      const { virtualMouse, virtualDragHandle, videoContainer } = this.elements;
+      if (!virtualMouse || !virtualDragHandle || !videoContainer) return;
+
+      virtualDragHandle.addEventListener("touchstart", this.onDragHandleTouchStart, {
+        passive: false,
+      });
+      virtualDragHandle.addEventListener("click", this.onDragHandleClick);
+      document.addEventListener("touchmove", this.onDragHandleTouchMove, {
+        passive: false,
+      });
+      document.addEventListener("touchend", this.onDragHandleTouchEnd, {
+        passive: false,
+      });
+      document.addEventListener("touchcancel", this.onDragHandleTouchEnd, {
+        passive: false,
+      });
+    }
+
+    onDragHandleTouchStart(event) {
+      const touch = event.touches?.[0];
+      if (!touch || !this.elements.virtualMouse) return;
+      event.preventDefault();
+      const rect = this.elements.virtualMouse.getBoundingClientRect();
+      this.state.draggingVirtualMouse = true;
+      this.state.dragOffset = {
+        x: touch.clientX - rect.left,
+        y: touch.clientY - rect.top,
+      };
+    }
+
+    onDragHandleTouchMove(event) {
+      if (!this.state.draggingVirtualMouse) return;
+      const touch = event.touches?.[0];
+      if (!touch || !this.elements.videoContainer || !this.elements.virtualMouse)
+        return;
+      event.preventDefault();
+
+      const containerRect = this.elements.videoContainer.getBoundingClientRect();
+      let newX = touch.clientX - this.state.dragOffset.x - containerRect.left;
+      let newY = touch.clientY - this.state.dragOffset.y - containerRect.top;
+
+      const maxX = Math.max(
+        0,
+        containerRect.width - this.elements.virtualMouse.offsetWidth
+      );
+      const maxY = Math.max(
+        0,
+        containerRect.height - this.elements.virtualMouse.offsetHeight
+      );
+
+      newX = Math.max(0, Math.min(newX, maxX));
+      newY = Math.max(0, Math.min(newY, maxY));
+
+      this.elements.virtualMouse.style.left = `${newX}px`;
+      this.elements.virtualMouse.style.top = `${newY}px`;
+      this.elements.virtualMouse.style.bottom = "auto";
+      this.elements.virtualMouse.style.transform = "none";
+    }
+
+    onDragHandleTouchEnd() {
+      this.state.draggingVirtualMouse = false;
+    }
+
+    onDragHandleClick(event) {
+      event.stopPropagation();
+      this.elements.virtualMouse?.classList.toggle("minimized");
+    }
+
+    setupFullscreenButtons() {
+      this.elements.fullscreenBtn?.addEventListener("click", () => {
+        const media = this.elements.mediaContainer;
+        if (!media) return;
+        this.state.isFullscreen = !this.state.isFullscreen;
+        media.classList.toggle("fullscreen", this.state.isFullscreen);
+        this.elements.fullscreenBtn.textContent = this.state.isFullscreen
+          ? "退出全屏"
+          : "最大化";
+        this.ensureVideoRect();
+      });
+
+      this.elements.realFullscreenBtn?.addEventListener("click", () => {
+        const container = this.elements.videoContainer;
+        if (!container) return;
+        if (!this.state.isRealFullscreen) {
+          const request =
+            container.requestFullscreen ||
+            container.mozRequestFullScreen ||
+            container.webkitRequestFullscreen ||
+            container.msRequestFullscreen;
+          request?.call(container);
+        } else {
+          const exit =
+            document.exitFullscreen ||
+            document.mozCancelFullScreen ||
+            document.webkitExitFullscreen ||
+            document.msExitFullscreen;
+          exit?.call(document);
+        }
+        this.state.isRealFullscreen = !this.state.isRealFullscreen;
+        this.elements.realFullscreenBtn.textContent = this.state.isRealFullscreen
+          ? "退出全屏"
+          : "全屏";
+      });
+    }
+
+    showPointerLockToast(text, duration = 2500) {
+      let toast = document.getElementById("pointerlock-toast");
+      if (!toast) {
+        toast = document.createElement("div");
+        toast.id = "pointerlock-toast";
+        Object.assign(toast.style, {
+          position: "fixed",
+          left: "50%",
+          bottom: "24px",
+          transform: "translateX(-50%)",
+          background: "rgba(0,0,0,0.75)",
+          color: "#fff",
+          padding: "8px 12px",
+          borderRadius: "6px",
+          fontSize: "13px",
+          zIndex: "9999",
+          pointerEvents: "none",
+          opacity: "1",
+          transition: "opacity 0.2s",
+        });
+        document.body.appendChild(toast);
+      }
+      toast.textContent = text;
+      toast.style.opacity = "1";
+      if (this.state.pointerLockToastTimer) {
+        clearTimeout(this.state.pointerLockToastTimer);
+      }
+      this.state.pointerLockToastTimer = setTimeout(() => {
+        toast.style.opacity = "0";
+        this.state.pointerLockToastTimer = null;
+      }, duration);
+    }
+
+    handleExternalMouseEvent(event) {
+      if (!event || !event.type) return;
+      switch (event.type) {
+        case "mousedown":
+          this.onPointerDown(event);
+          break;
+        case "mouseup":
+          this.onPointerUp(event);
+          break;
+        case "mousemove":
+          this.onPointerMove(event);
+          break;
+        case "wheel":
+          this.onWheel(event);
+          break;
+        default:
+          break;
+      }
     }
   }
 
-  // Check and synchronize fullscreen button state
-  function syncFullscreenButtonState() {
-    const realFullscreenBtn = document.getElementById('real-fullscreen-btn');
-    if (!realFullscreenBtn) return;
+  const control = new ControlManager();
 
-    // check fullscreen
-    if (document.fullscreenElement || document.mozFullScreenElement || document.webkitFullscreenElement || document.msFullscreenElement) {
-      realFullscreenBtn.textContent = '退出全屏';
-      isRealFullscreen = true;
-    } else {
-      realFullscreenBtn.textContent = '全屏';
-      isRealFullscreen = false;
-    }
-  }
-
-  // Setup fullscreen button events
-  function setupFullscreenButtons() {
-    const fullscreenBtn = document.getElementById('fullscreen-btn');
-    if (fullscreenBtn) {
-      fullscreenBtn.addEventListener('click', toggleFullscreen);
-    }
-
-    const realFullscreenBtn = document.getElementById('real-fullscreen-btn');
-    if (realFullscreenBtn) {
-      realFullscreenBtn.addEventListener('click', toggleRealFullscreen);
-    }
-
-    document.addEventListener('fullscreenchange', syncFullscreenButtonState);
-    document.addEventListener('mozfullscreenchange', syncFullscreenButtonState);
-    document.addEventListener('webkitfullscreenchange', syncFullscreenButtonState);
-    document.addEventListener('msfullscreenchange', syncFullscreenButtonState);
-  }
-
-  function onDataChannelOpen(dataChannel) {
-    dc = dataChannel;
-    if (dataChannelStateSpan) dataChannelStateSpan.textContent = 'open';
-    if (dataChannelLog) { dataChannelLog.textContent += '[datachannel open]\n'; dataChannelLog.scrollTop = dataChannelLog.scrollHeight; }
-    setupMouseListeners();
-    setupKeyboardListeners();
-    setupFullscreenButtons();
-    if (dcInput) dcInput.disabled = false;
-    if (dcSendBtn) dcSendBtn.disabled = false;
-    if (audioCaptureChk) { audioCaptureChk.disabled = true; audioCaptureChk.checked = false; audioCaptureChk.disabled = false; audioCaptureChk.onchange = (e) => sendAudioCapture(!!e.target.checked); }
-    if (displayIdInput) displayIdInput.disabled = false;
-    const setDisplayBtn = document.getElementById('set-display');
-    if (setDisplayBtn) setDisplayBtn.disabled = false;
-  }
-
-  function onDataChannelClose() {
-    if (dataChannelStateSpan) dataChannelStateSpan.textContent = 'closed';
-    if (dataChannelLog) { dataChannelLog.textContent += '[datachannel closed]\n'; dataChannelLog.scrollTop = dataChannelLog.scrollHeight; }
-    if (dcInput) { dcInput.disabled = true; dcInput.value = ''; }
-    if (dcSendBtn) dcSendBtn.disabled = true;
-    if (audioCaptureChk) { audioCaptureChk.disabled = true; audioCaptureChk.checked = false; audioCaptureChk.onchange = null; }
-    if (displayIdInput) displayIdInput.disabled = true;
-    const setDisplayBtn = document.getElementById('set-display');
-    if (setDisplayBtn) setDisplayBtn.disabled = true;
-    dc = null;
-  }
-
-  // Expose to global scope
-  window.CrossDeskControl = {
-    onDataChannelOpen,
-    onDataChannelClose,
-    sendDataChannelMessage,
-    setDisplayId,
-  };
+  window.CrossDeskControl = control;
+  window.sendRemoteActionAt = (x, y, flag, scroll) =>
+    control.sendMouseAction({ x, y, flag, scroll });
+  window.sendMouseEvent = (event) => control.handleExternalMouseEvent(event);
 })();
+

@@ -3,13 +3,22 @@
   --danger-color: #f44336;
   --background-color: #f5f5f5;
   --border-radius: 8px;
+  --card-background: #ffffff;
+  --text-color: #333333;
+  --secondary-text-color: #666666;
+  --border-color: #dddddd;
+  --hover-color: #1976d2;
+  --danger-hover-color: #d32f2f;
+  --disabled-color: #cccccc;
+  --status-background: #f8f9fa;
 }
 
 body {
   margin: 0;
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
   background-color: var(--background-color);
-  color: #333;
+  color: var(--text-color);
+  line-height: 1.6;
 }
 
 .container {
@@ -19,12 +28,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  min-height: 100vh;
 }
 
-h1 {
+header h1 {
   text-align: center;
   color: var(--primary-color);
-  margin-bottom: 10px;
+  margin: 0 0 10px 0;
+  font-size: 2.5rem;
+  font-weight: 400;
 }
 
 /* Connection settings + status card */
@@ -36,48 +48,73 @@ h1 {
 
 .connection-card,
 .status-card {
-  background: white;
+  background: var(--card-background);
   border-radius: var(--border-radius);
   padding: 20px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
   flex: 1 1 300px;
+  transition: box-shadow 0.3s ease;
+}
+
+.connection-card:hover,
+.status-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
 .connection-card h2,
 .status-card h2 {
   margin-top: 0;
   color: #444;
+  font-weight: 500;
+  font-size: 1.5rem;
 }
 
 .option {
   display: flex;
   align-items: center;
   margin-bottom: 15px;
+  gap: 10px;
 }
 
 .option label {
   width: 120px;
-  color: #666;
+  color: var(--secondary-text-color);
+  font-weight: 500;
 }
 
 .option input {
   flex: 1;
-  padding: 8px 12px;
-  border: 1px solid #ddd;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   font-size: 14px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  min-width: 0;
+}
+
+.option input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.2);
 }
 
 /* Unify dropdown and button height and style */
 .option select {
   padding: 10px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   font-size: 14px;
-  background-color: #fff;
+  background-color: var(--card-background);
   height: 40px;
   /* Consistent visual height with buttons */
   box-sizing: border-box;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.option select:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.2);
 }
 
 .option select:disabled {
@@ -89,6 +126,8 @@ h1 {
 .actions {
   display: flex;
   gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
 }
 
 button {
@@ -99,34 +138,46 @@ button {
   font-weight: 500;
   color: white;
   background-color: var(--primary-color);
-  transition: background-color 0.2s;
+  transition: background-color 0.2s, transform 0.1s;
+  font-size: 14px;
+  min-width: 80px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-button:hover {
-  background-color: #1976d2;
+button:hover:not(:disabled) {
+  background-color: var(--hover-color);
+  transform: translateY(-1px);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 button:disabled {
-  background-color: #ccc;
+  background-color: var(--disabled-color);
   cursor: not-allowed;
+  transform: none;
 }
 
 #disconnect {
   background-color: var(--danger-color);
 }
 
-#disconnect:hover {
-  background-color: #d32f2f;
+#disconnect:hover:not(:disabled) {
+  background-color: var(--danger-hover-color);
 }
 
 /* Status display */
 .status-item {
-  padding: 10px;
-  background: #f8f9fa;
+  padding: 12px 15px;
+  background: var(--status-background);
   border-radius: 4px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border-color);
   margin-bottom: 10px;
   transition: background-color 0.5s;
+  word-break: break-all;
 }
 
 /* Status change animation */
@@ -140,7 +191,7 @@ button:disabled {
   }
 
   50% {
-    background-color: #f8f9fa;
+    background-color: var(--status-background);
   }
 
   100% {
@@ -154,25 +205,32 @@ button:disabled {
   border-radius: var(--border-radius);
   padding: 20px;
   position: relative;
+  transition: all 0.3s ease;
 }
 
 video {
   width: 100%;
   border-radius: 4px;
+  display: block;
 }
 
 #data-channel {
-  background: #f8f9fa;
-  border: 1px solid #ddd;
+  background: var(--status-background);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 15px;
   font-family: monospace;
   height: 200px;
   overflow-y: auto;
   white-space: pre-wrap;
+  resize: vertical;
 }
 
 @media (max-width: 768px) {
+  .container {
+    padding: 10px;
+  }
+  
   .top-card {
     flex-direction: column;
   }
@@ -185,6 +243,18 @@ video {
     width: 100%;
     margin-bottom: 5px;
   }
+  
+  header h1 {
+    font-size: 2rem;
+  }
+  
+  .actions {
+    flex-direction: column;
+  }
+  
+  .actions button {
+    width: 100%;
+  }
 }
 
 /* Virtual mouse related styles */
@@ -195,21 +265,37 @@ video {
 
 #virtual-mouse {
   position: absolute;
-  top: 50%;
+  bottom: 20px;
   left: 50%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  gap: 10px;
+  transform: translateX(-50%);
   z-index: 10;
   padding: 10px;
   background-color: rgba(0, 0, 0, 0.5);
-  border-radius: 30px;
+  border-radius: 15px;
   touch-action: none;
+  min-width: 300px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+  transition: all 0.3s ease;
+}
+
+#virtual-mouse.minimized {
+  background-color: rgba(0, 0, 0, 0.7);
+  padding: 5px;
+}
+
+.virtual-mouse-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  gap: 10px;
 }
 
 .virtual-mouse-btn {
-  width: 60px;
-  height: 60px;
+  width: 70px;
+  height: 70px;
   border-radius: 50%;
   border: 2px solid white;
   background-color: rgba(255, 255, 255, 0.9);
@@ -223,11 +309,90 @@ video {
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
   user-select: none;
   touch-action: manipulation;
+  flex: 1;
+  transition: all 0.1s ease;
 }
 
 .virtual-mouse-btn:active {
   background-color: rgba(200, 200, 200, 0.9);
   transform: scale(0.95);
+}
+
+.virtual-mouse-wheel {
+  width: 50px;
+  height: 50px;
+  border-radius: 25px;
+  background-color: #ddd;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #333;
+  user-select: none;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+  flex: 1;
+  transition: background-color 0.2s;
+}
+
+.virtual-mouse-wheel:active {
+  background-color: #ccc;
+}
+
+.virtual-mouse-touchpad {
+  height: 100px;
+  background-color: rgba(200, 200, 200, 0.5);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  font-size: 16px;
+  user-select: none;
+  margin-top: 5px;
+  border: 1px solid #aaa;
+  transition: background-color 0.2s;
+}
+
+.virtual-mouse-touchpad:active {
+  background-color: rgba(180, 180, 180, 0.5);
+}
+
+#virtual-mouse.minimized .virtual-mouse-top,
+#virtual-mouse.minimized .virtual-mouse-touchpad {
+  display: none;
+}
+
+.drag-handle {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background-color: #4CAF50;
+  cursor: move;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: bold;
+  font-size: 18px;
+  transition: background-color 0.2s;
+}
+
+.drag-handle:hover {
+  background-color: #45a049;
+}
+
+.drag-handle::after {
+  content: "≡";
+}
+
+#virtual-mouse.minimized .drag-handle {
+  position: static;
+  width: 40px;
+  height: 40px;
 }
 
 /* Control button styles */
@@ -242,10 +407,11 @@ video {
   font-size: 14px;
   height: 40px;
   box-sizing: border-box;
+  transition: background-color 0.2s;
 }
 
 .control-btn:hover {
-  background-color: #1976d2;
+  background-color: var(--hover-color);
 }
 
 /* Fullscreen styles */
@@ -276,4 +442,30 @@ video {
   #virtual-mouse {
     display: none;
   }
+}
+
+/* Focus styles for accessibility */
+button:focus,
+input:focus,
+select:focus {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+/* Scrollbar styling */
+#data-channel::-webkit-scrollbar {
+  width: 8px;
+}
+
+#data-channel::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+#data-channel::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+#data-channel::-webkit-scrollbar-thumb:hover {
+  background: #a1a1a1;
 }
