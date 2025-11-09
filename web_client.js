@@ -74,6 +74,33 @@ function handleSignalingMessage(message) {
     case "login":
       clientId = message.user_id.split("@")[0];
       break;
+    case "user_join_transmission":
+      // Handle join transmission response
+      if (message.status === "failed") {
+        let errorMessage = "";
+        if (message.reason === "No such transmission id") {
+          errorMessage = "没有该设备";
+        } else if (message.reason === "Incorrect password") {
+          errorMessage = "密码错误";
+        }
+        
+        if (errorMessage && elements.connectingOverlay && elements.connectingMessageText) {
+          // Show error message
+          elements.connectingMessageText.textContent = errorMessage;
+          elements.connectingOverlay.style.display = "flex";
+          
+          // Reset connection state after showing error for 3 seconds
+          setTimeout(() => {
+            // Hide connecting overlay first
+            if (elements.connectingOverlay) {
+              elements.connectingOverlay.style.display = "none";
+            }
+            // Then disconnect to reset UI
+            disconnect();
+          }, 3000);
+        }
+      }
+      break;
     case "offer":
       handleOffer(message);
       break;
