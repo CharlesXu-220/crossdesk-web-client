@@ -27,9 +27,9 @@ const DEFAULT_CONFIG = {
     { urls: ["stun:115.190.158.189:3478"] },
     { urls: ["turn:115.190.158.189:3478"], username: "crossdesk", credential: "crossdeskpw" },
   ],
-  heartbeatIntervalMs: 3000,
-  heartbeatTimeoutMs: 10000,
-  reconnectDelayMs: 2000,
+  heartbeatIntervalMs: 30000,
+  heartbeatTimeoutMs: 100000,
+  reconnectDelayMs: 20000,
   clientTag: "web",
 };
 const CONFIG = Object.assign({}, DEFAULT_CONFIG, window.CROSSDESK_CONFIG || {});
